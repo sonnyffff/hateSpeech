@@ -1,24 +1,37 @@
 import torch
-from transformers import BertTokenizer, BertConfig
-from BERT_binary_hug import WeightedBertForSequenceClassification  # assuming same class as in your training script
+from transformers import AutoTokenizer, AutoConfig
+from BERT_binary_hug import WeightedBertForSequenceClassification
+from Hatebert_binary_hug import WeightedHateBERT
 
-# 🔧 Load model
-model_path = "bert-hate-detector.pt"
-config = BertConfig.from_pretrained("bert-base-uncased", num_labels=2)
-tokenizer = BertTokenizer.from_pretrained("bert-hate-detector")
+# === Model Selection ===
+MODEL_TYPE = input("🤖 Choose model [bert / hatebert]: ").strip().lower()
 
-# Dummy weights for inference (you can disable weighted loss if desired)
-dummy_weights = torch.tensor([1.0, 1.0])
+if MODEL_TYPE == "hatebert":
+    model_name = "GroNLP/hateBERT"
+    model_path = "models/hatebert-88.pt"
+    tokenizer = AutoTokenizer.from_pretrained("hatebert-hate-detector")
+    dummy_weights = torch.tensor([1.0, 1.0])
+    model = WeightedHateBERT(model_name=model_name, class_weights=dummy_weights)
+    model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
+elif MODEL_TYPE == "bert":
+    model_name = "bert-base-uncased"
+    model_path = "models/bert-86.pt"
+    tokenizer = AutoTokenizer.from_pretrained("bert-hate-detector")
+    config = AutoConfig.from_pretrained(model_name, num_labels=2)
+    dummy_weights = torch.tensor([1.0, 1.0])
+    model = WeightedBertForSequenceClassification(config=config, class_weights=dummy_weights)
+    model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
+else:
+    raise ValueError("❌ Invalid model type. Please choose 'bert' or 'hatebert'.")
 
-model = WeightedBertForSequenceClassification(config, class_weights=dummy_weights)
-model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+# === Inference Setup ===
 model.eval()
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
-# 🔁 Real-time prediction loop
-print("🚀 Real-Time Hate Speech Detector (type 'exit' to quit)")
+print(f"\n🚀 Real-Time Hate Speech Detector using [{MODEL_TYPE.upper()}] (type 'exit' to quit)")
+
+# === Real-Time Prediction Loop ===
 while True:
     text = input("📝 Enter text: ")
     if text.strip().lower() == "exit":
