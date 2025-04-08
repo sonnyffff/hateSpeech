@@ -61,7 +61,7 @@ def tokenize_dataset(train_df, val_df, tokenizer_name="bert-base-uncased"):
 
     def tokenize_fn(example):
         encoding = tokenizer(example["Content"], truncation=True, padding="max_length", max_length=128)
-        encoding["labels"] = example["Label"]  # ✅ Add labels for Trainer
+        encoding["labels"] = example["Label"]  # Add labels for Trainer
         return encoding
 
     train_dataset = train_dataset.map(tokenize_fn, batched=True)

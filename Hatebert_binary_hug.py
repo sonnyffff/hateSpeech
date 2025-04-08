@@ -1,11 +1,11 @@
 import pandas as pd
 import torch
+import torch.nn as nn
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import precision_recall_fscore_support, accuracy_score, classification_report
 from datasets import Dataset
 from transformers import (
     AutoTokenizer,
-    AutoConfig,
     AutoModelForSequenceClassification,
     Trainer,
     TrainingArguments,
@@ -14,11 +14,23 @@ from transformers import (
 )
 from transformers.modeling_outputs import SequenceClassifierOutput
 
+
 # ===== Subclassed HateBERT model with weighted loss =====
-class WeightedHateBERT(torch.nn.Module):
-    def __init__(self, model_name, class_weights, num_labels=2):
+class WeightedHateBERT(nn.Module):
+    def __init__(self, model_name=None, config=None, class_weights=None, num_labels=2):
         super().__init__()
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=num_labels)
+        if config is not None:
+            # Initialize model from config (no pretrained weights)
+            self.model = AutoModelForSequenceClassification.from_config(config)
+        elif model_name is not None:
+            # Initialize from HuggingFace pretrained model
+            self.model = AutoModelForSequenceClassification.from_pretrained(
+                model_name,
+                num_labels=num_labels
+            )
+        else:
+            raise ValueError("Either `model_name` or `config` must be provided.")
+
         self.class_weights = class_weights
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
@@ -26,7 +38,7 @@ class WeightedHateBERT(torch.nn.Module):
         logits = outputs.logits
         loss = None
         if labels is not None:
-            loss_fn = torch.nn.CrossEntropyLoss(weight=self.class_weights.to(logits.device))
+            loss_fn = nn.CrossEntropyLoss(weight=self.class_weights.to(logits.device))
             loss = loss_fn(logits, labels)
         return SequenceClassifierOutput(
             loss=loss,
@@ -34,6 +46,7 @@ class WeightedHateBERT(torch.nn.Module):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+
 
 # ===== Load and preprocess dataset =====
 def load_dataset(path):
@@ -46,6 +59,7 @@ def load_dataset(path):
 
 def split_dataset(df):
     return train_test_split(df, test_size=0.2, stratify=df["Label"], random_state=42)
+
 
 # ===== Tokenization =====
 def tokenize_dataset(train_df, val_df, tokenizer_name="GroNLP/hateBERT"):
@@ -69,6 +83,7 @@ def tokenize_dataset(train_df, val_df, tokenizer_name="GroNLP/hateBERT"):
     val_dataset.set_format("torch")
     return train_dataset, val_dataset, tokenizer
 
+
 # ===== Metrics =====
 def compute_metrics(pred):
     labels = pred.label_ids
@@ -76,6 +91,7 @@ def compute_metrics(pred):
     precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average="macro")
     acc = accuracy_score(labels, preds)
     return {"accuracy": acc, "precision": precision, "recall": recall, "f1": f1}
+
 
 # ===== Build model =====
 def get_weighted_model(train_df, model_name="GroNLP/hateBERT"):
@@ -86,6 +102,7 @@ def get_weighted_model(train_df, model_name="GroNLP/hateBERT"):
     class_weights = torch.tensor([weight_0, weight_1], dtype=torch.float)
 
     return WeightedHateBERT(model_name, class_weights)
+
 
 # ===== Train model =====
 def train_model(train_dataset, val_dataset, tokenizer, model):
