@@ -1,19 +1,14 @@
 import torch
 from transformers import AutoTokenizer, AutoConfig
 
-from BERT_binary_hug import WeightedBertForSequenceClassification
-from Hatebert_binary_hug import WeightedHateBERT
+from BERT import WeightedBertForSequenceClassification
+from HateBERT import WeightedHateBERT
 from RNN_LSTM import RNNHateSpeechModel, clean_text, tokenize, tokens_to_indices
+from CNN import ContentClassifier, ContentDataset
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# === Dummy CNN/RNN Predictors ===
-def dummy_cnn_predict(text):
-    return 1, 0.65  # (prediction, confidence)
-
-def dummy_rnn_predict(text):
-    return 0, 0.60
 
 def preprocess_for_rnn(text):
     tokens = tokenize(clean_text(text))
@@ -66,8 +61,30 @@ if MODEL_TYPE in ["rnn", "ensemble"]:
     rnn_model.load_state_dict(torch.load("models/rnn.pt", map_location=device, weights_only=True))
     rnn_model.to(device).eval()
 
-if MODEL_TYPE not in ["bert", "hatebert", "lstm", "rnn", "ensemble"]:
-    raise ValueError("❌ Invalid model type. Please choose from [bert, hatebert, lstm, rnn, ensemble]")
+if MODEL_TYPE in ["cnn", "ensemble"]:
+    cnn_model_path = "models/cnn.pth"
+    cnn_data_path = "HateBinaryDataset/HateSpeechDatasetBalanced_with_splits.csv"
+
+    cnn_dataset = ContentDataset.load_dataset_and_make_vectorizer(cnn_data_path)
+    cnn_vectorizer = cnn_dataset.get_vectorizer()
+    cnn_vocab = cnn_vectorizer.content_vocab
+    cnn_num_classes = len(cnn_vectorizer.label_vocab)
+
+    cnn_model = ContentClassifier(
+        embedding_size=100,
+        num_embeddings=len(cnn_vocab),
+        num_channels=100,
+        hidden_dim=100,
+        num_classes=cnn_num_classes,
+        dropout_p=0.1,
+        pretrained_embeddings=None,
+        padding_idx=0
+    )
+    cnn_model.load_state_dict(torch.load(cnn_model_path, map_location=device, weights_only=True))
+    cnn_model.to(device).eval()
+
+if MODEL_TYPE not in ["bert", "hatebert", "cnn", "rnn", "ensemble"]:
+    raise ValueError("❌ Invalid model type. Please choose from [bert, hatebert, cnn, rnn, ensemble]")
 
 print(f"\n🚀 Real-Time Hate Speech Detector using [{MODEL_TYPE.upper()}] (type 'exit' to quit)")
 
@@ -92,7 +109,13 @@ while True:
         conf = probs[0][pred].item()
 
     elif MODEL_TYPE == "cnn":
-        pred, conf = dummy_cnn_predict(text)
+        vectorized = cnn_vectorizer.vectorize(text.lower())
+        x_tensor = torch.tensor(vectorized).unsqueeze(0).to(device)  # (1, seq_len)
+        with torch.no_grad():
+            logits = cnn_model(x_tensor, apply_softmax=True)
+            conf, pred = torch.max(logits, dim=1)
+        pred = pred.item()
+        conf = conf.item()
 
     elif MODEL_TYPE == "rnn":
         input_tensor = preprocess_for_rnn(text)
@@ -116,7 +139,13 @@ while True:
         pred_hatebert = torch.argmax(probs_hatebert, dim=1).item()
         conf_hatebert = probs_hatebert[0][pred_hatebert].item()
 
-        pred_cnn, conf_cnn = dummy_cnn_predict(text)
+        vectorized = cnn_vectorizer.vectorize(text.lower())
+        x_tensor = torch.tensor(vectorized).unsqueeze(0).to(device)  # (1, seq_len)
+        with torch.no_grad():
+            logits = cnn_model(x_tensor, apply_softmax=True)
+            conf, pred = torch.max(logits, dim=1)
+        pred_cnn = pred.item()
+        conf_cnn = conf.item()
 
         input_tensor = preprocess_for_rnn(text)
         with torch.no_grad():

@@ -1,17 +1,14 @@
 import torch
-import numpy as np
 import argparse
 from transformers import AutoTokenizer, AutoConfig
-from sklearn.metrics import accuracy_score, f1_score
-import pandas as pd
+from sklearn.metrics import accuracy_score, f1_score, classification_report
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
-import os
+import pandas as pd
 
-from BERT_binary_hug import WeightedBertForSequenceClassification
-from Hatebert_binary_hug import WeightedHateBERT
+from BERT import WeightedBertForSequenceClassification
+from HateBERT import WeightedHateBERT
 from RNN_LSTM import RNNHateSpeechModel, clean_text, tokenize, tokens_to_indices
-
+from CNN import ContentClassifier, ContentDataset
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -26,8 +23,10 @@ def load_dataset(path):
     df["Label"] = df["Label"].astype(int)
     return df
 
+
 def split_dataset(df):
-    return train_test_split(df, test_size=0.001, stratify=df["Label"], random_state=42)
+    return train_test_split(df, test_size=0.2, stratify=df["Label"], random_state=42)
+
 
 # === Load RNN (LSTM-based) model
 meta = torch.load("models/rnn_preprocessing_meta.pt", weights_only=True)
@@ -43,6 +42,24 @@ n_layers = 1
 rnn_model = RNNHateSpeechModel(vocab_size, embed_dim, hidden_dim, output_dim, n_layers)
 rnn_model.load_state_dict(torch.load("models/rnn.pt", map_location=device, weights_only=True))
 rnn_model.to(device).eval()
+
+
+# === Load CNN model ===
+cnn_vectorizer = ContentDataset.load_dataset_and_make_vectorizer("HateBinaryDataset/HateSpeechDatasetBalanced_with_splits.csv").get_vectorizer()
+
+cnn_model = ContentClassifier(
+    embedding_size=100,
+    num_embeddings=len(cnn_vectorizer.content_vocab),
+    num_channels=100,
+    hidden_dim=100,
+    num_classes=2,
+    dropout_p=0.1,
+    pretrained_embeddings=None,  # or load GloVe if applicable
+    padding_idx=0
+)
+
+cnn_model.load_state_dict(torch.load("models/cnn.pth", map_location=device, weights_only=True))
+cnn_model.to(device).eval()
 
 
 # === BERT Initialization ===
@@ -66,13 +83,15 @@ hatebert_state_dict = torch.load("models/hatebert-88.pt", map_location=device, w
 hatebert_model.load_state_dict(hatebert_state_dict)
 hatebert_model.to(device).eval()
 
+
 def preprocess_for_rnn(text):
     tokens = tokenize(clean_text(text))
     indices = tokens_to_indices(tokens, vocab_to_idx, max_len)
     tensor = torch.tensor(indices, dtype=torch.long).unsqueeze(0).to(device)
     return tensor
 
-# === Dummy Predictors for LSTM and RNN (replace later) ===
+
+# === Predictors for LSTM and RNN (replace later) ===
 def predict_rnn(text):
     input_tensor = preprocess_for_rnn(text)
     with torch.no_grad():
@@ -81,10 +100,18 @@ def predict_rnn(text):
         pred = int(prob >= 0.5)
         return pred, prob
 
-# === Dummy CNN model predictor ===
+
+# === CNN model predictor ===
 def predict_cnn(text):
-    # Placeholder logic until actual CNN is implemented
-    return np.random.randint(0, 2), np.random.uniform(0.5, 0.9)
+    tokens = text.lower().strip().split(" ")
+    indices = cnn_vectorizer.vectorize(" ".join(tokens), vector_length=30)
+    x_tensor = torch.tensor([indices], dtype=torch.long).to(device)
+    with torch.no_grad():
+        logits = cnn_model(x_tensor, apply_softmax=True)
+    pred = torch.argmax(logits, dim=1).item()
+    conf = logits[0][pred].item()
+    return pred, conf
+
 
 # === Predict Functions ===
 def predict_bert(text):
@@ -97,6 +124,7 @@ def predict_bert(text):
         conf = probs[0][pred].item()
     return pred, conf
 
+
 def predict_hatebert(text):
     inputs = hatebert_tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=128)
     inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -106,6 +134,7 @@ def predict_hatebert(text):
         pred = torch.argmax(probs, dim=1).item()
         conf = probs[0][pred].item()
     return pred, conf
+
 
 # === Aggregation ===
 def aggregate_predictions(results, weights):
